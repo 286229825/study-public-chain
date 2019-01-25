@@ -9,7 +9,7 @@ import (
 
 //难度系数，表示生成的256位的哈希值的前面至少要有多少个零。
 //这里的 targetBits 为16，表示生成的256位的哈希值的前面至少要有16个零。
-const targetBits = 26
+const targetBits = 10
 
 //工作量证明结构
 type proofOfWork struct {
