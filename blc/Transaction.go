@@ -50,8 +50,8 @@ func (tx *transaction) hashTransaction() []byte {
 //但是 Coinbase 交易是没有父交易的，因为币是直接由系统生成的。
 func NewCoinbaseTransaction(address string) *transaction {
 	//设置交易的输入输出
-	txInput := &TxInput{[]byte{}, -1, "Genesis Data"}
-	txOutput := &TxOutput{10, address}
+	txInput := &TxInput{[]byte{}, -1, nil, []byte{}}
+	txOutput := NewTXOutput(10, address)
 	txCoinbase := &transaction{[]byte{}, []*TxInput{txInput}, []*TxOutput{txOutput}}
 	//设置交易的哈希值
 	txCoinbase.TxHash = txCoinbase.hashTransaction()
@@ -63,6 +63,11 @@ func NewCoinbaseTransaction(address string) *transaction {
 //from：出钱的人，只能有一个
 //tos：收钱的人，可以有多个
 func NewTransaction(from string, tos map[string]float64, bc *blockChain) *transaction {
+	wallets, err := GetAllWallets()
+	if err != nil {
+		log.Panic(err)
+	}
+	wallet := wallets[from]
 	var totalAmount float64 = 0
 	for _, amount := range tos {
 		totalAmount += amount
@@ -79,7 +84,8 @@ func NewTransaction(from string, tos map[string]float64, bc *blockChain) *transa
 			input := &TxInput{
 				TXHash:    []byte(txHash),
 				Vout:      index,
-				ScriptSig: from,
+				Signature: nil,
+				PubKey:    wallet.PublicKey,
 			}
 			inputs = append(inputs, input)
 		}
@@ -87,12 +93,12 @@ func NewTransaction(from string, tos map[string]float64, bc *blockChain) *transa
 	//创建输出
 	//给对方支付
 	for to, amount := range tos {
-		output := &TxOutput{amount, to}
+		output := NewTXOutput(amount, to)
 		outputs = append(outputs, output)
 	}
 	//找零给自己
 	if total > totalAmount {
-		output := &TxOutput{total - totalAmount, from}
+		output := NewTXOutput(total-totalAmount, from)
 		outputs = append(outputs, output)
 	}
 	tx := &transaction{[]byte{}, inputs, outputs}
@@ -106,23 +112,43 @@ type TxInput struct {
 	TXHash []byte
 	//所引用TXOutput的索引值
 	Vout int64
-	//数字签名，对应一个输出
-	ScriptSig string
+	//数字签名
+	Signature []byte
+	//原生的公钥
+	PubKey []byte
 }
 
-func (input *TxInput) isTheSameScriptSig(address string) bool {
-	return address == input.ScriptSig
+func (input *TxInput) UnlockRipemd160Hash(Ripemd160Hash []byte) bool {
+	hashPubKey := HashPubKey(input.PubKey)
+
+	return bytes.Compare(hashPubKey, Ripemd160Hash) == 0
 }
 
 //输出结构
 type TxOutput struct {
 	//支付给收款方的金额
 	Value float64
-	//公钥
-	ScriptPubKey string
+	//经过一次256哈希，再经过一次160哈希之后的公钥
+	Ripemd160Hash []byte
+}
+
+//设置Ripemd160Hash
+func (output *TxOutput) Lock(address string) {
+	publicKeyHash := Base58Decode([]byte(address))
+	output.Ripemd160Hash = publicKeyHash[1 : len(publicKeyHash)-4]
 }
 
 //判断当前output的锁定脚本能否被当前地址的解锁脚本解锁
-func (output *TxOutput) canBeUnlock(address string) bool {
-	return address == output.ScriptPubKey
+func (output *TxOutput) UnLockScriptPubKeyWithAddress(address string) bool {
+	publicKeyHash := Base58Decode([]byte(address))
+	hash160 := publicKeyHash[1 : len(publicKeyHash)-4]
+	return bytes.Compare(hash160, output.Ripemd160Hash) == 0
+}
+
+//创建输入
+func NewTXOutput(value float64, address string) *TxOutput {
+	txOutput := &TxOutput{value, nil}
+	//设置Ripemd160Hash
+	txOutput.Lock(address)
+	return txOutput
 }

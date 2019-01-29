@@ -203,6 +203,8 @@ func (bc *blockChain) AddBlock(txs []*transaction) {
 
 //找出当前用户所有可用的UTXO所在的交易数组
 func (bc *blockChain) findUTXOTransactions(address string) []*transaction {
+	publicKeyHash := Base58Decode([]byte(address))
+	ripemd160Hash := publicKeyHash[1 : len(publicKeyHash)-4]
 	iterator := bc.Iterator()
 	spentedOutputs := make(map[string]int64)
 	var unSpentedTx []*transaction
@@ -212,13 +214,13 @@ func (bc *blockChain) findUTXOTransactions(address string) []*transaction {
 		for _, tx := range b.Txs {
 			if tx != nil && !tx.isCoinbase() {
 				for _, input := range tx.TxInputs {
-					if input.isTheSameScriptSig(address) {
+					if input.UnlockRipemd160Hash(ripemd160Hash) {
 						spentedOutputs[string(input.TXHash)] = input.Vout
 					}
 				}
 			}
 			for _, output := range tx.TxOutputs {
-				if output.canBeUnlock(address) {
+				if output.UnLockScriptPubKeyWithAddress(address) {
 					if _, isPresent := spentedOutputs[string(tx.TxHash)]; !isPresent {
 						unSpentedTx = append(unSpentedTx, tx)
 						break
@@ -243,7 +245,7 @@ func (bc *blockChain) findSuitableUTXOs(from string, amount float64) (map[string
 LABEL1:
 	for _, tx := range transactions {
 		for index, output := range tx.TxOutputs {
-			if output.canBeUnlock(from) {
+			if output.UnLockScriptPubKeyWithAddress(from) {
 				//判断当前搜集的UTXO的总金额是否大于所需要花费的金额
 				if total < amount {
 					suitableUTXOs[string(tx.TxHash)] = append(suitableUTXOs[string(tx.TxHash)], int64(index))
@@ -262,7 +264,7 @@ func (bc *blockChain) GetBalance(address string) float64 {
 	var total float64 = 0
 	for _, tx := range txs {
 		for _, output := range tx.TxOutputs {
-			if output.canBeUnlock(address) {
+			if output.UnLockScriptPubKeyWithAddress(address) {
 				total += output.Value
 			}
 		}

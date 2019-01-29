@@ -15,6 +15,8 @@ const usage = `
 	send --from <FROM> --to <TO>  	"转账, 例如: send --from Tom --to Alice:10,Jack:12
 	getBalance --address <ADDRESS>				"获取余额"
 	printChain									"打印区块链信息"
+	createWallet								"创建钱包"
+	getAddressList								"获取所有钱包地址"
 `
 
 const createChain = "createChain"
@@ -25,20 +27,30 @@ const getBalance = "getBalance"
 
 const printChain = "printChain"
 
+const createWallet = "createWallet"
+
+const getAddressList = "getAddressList"
+
 type CLI struct{}
 
-func (cli CLI) printUsage() {
+func (cli *CLI) printUsage() {
 	fmt.Print(usage)
 	os.Exit(1)
 }
 
-func (cli CLI) createChain(address string) {
+func (cli *CLI) createChain(address string) {
+	if !ValidateAddress(address) {
+		log.Panic("收款人地址" + address + "无效")
+	}
 	bc := CreateBlockChain(address)
 	defer bc.Db.Close()
 	log.Println("区块链创建成功")
 }
 
-func (cli CLI) send(sendCmdFromParam, sendCmdToParam string) {
+func (cli *CLI) send(sendCmdFromParam, sendCmdToParam string) {
+	if !ValidateAddress(sendCmdFromParam) {
+		log.Panic("汇款人地址" + sendCmdFromParam + "无效")
+	}
 	bc := GetBlockChain()
 	defer bc.Db.Close()
 	tos := make(map[string]float64)
@@ -50,6 +62,10 @@ func (cli CLI) send(sendCmdFromParam, sendCmdToParam string) {
 			cli.printUsage()
 			return
 		} else {
+			to := arr[0]
+			if !ValidateAddress(to) {
+				log.Panic("收款人地址" + to + "无效")
+			}
 			amount, err := strconv.ParseFloat(arr[1], 64)
 			if err != nil {
 				log.Println("命令错误，金额不是float类型，请查看以下命令说明")
@@ -65,20 +81,33 @@ func (cli CLI) send(sendCmdFromParam, sendCmdToParam string) {
 	log.Println("交易创建成功")
 }
 
-func (cli CLI) printChain() {
+func (cli *CLI) printChain() {
 	bc := GetBlockChain()
 	defer bc.Db.Close()
 	bc.PrintChain()
 }
 
-func (cli CLI) getBalance(address string) {
+func (cli *CLI) getBalance(address string) {
+	if !ValidateAddress(address) {
+		log.Panic("余额地址" + address + "无效")
+	}
 	bc := GetBlockChain()
 	defer bc.Db.Close()
 	balance := bc.GetBalance(address)
 	log.Printf("%s的余额为：%f", address, balance)
 }
 
-func (cli CLI) paramsCheck() {
+func (cli *CLI) createWallet() {
+	wallet := NewWallet()
+	address := wallet.GetAddress()
+	log.Printf("钱包创建成功，地址为：%s", string(address))
+}
+
+func (cli *CLI) getAddressList() {
+
+}
+
+func (cli *CLI) paramsCheck() {
 	if len(os.Args) < 2 {
 		fmt.Println("invalid input")
 		cli.printUsage()
@@ -151,6 +180,10 @@ func (cli *CLI) Run() {
 			//若命令校验成功，则调用相应方法
 			cli.getBalance(*getBalanceCmdParam)
 		}
+	case createWallet:
+		cli.createWallet()
+	case getAddressList:
+		cli.getAddressList()
 	default:
 		cli.printUsage()
 	}
