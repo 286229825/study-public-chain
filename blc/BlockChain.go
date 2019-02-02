@@ -1,6 +1,9 @@
 package blc
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/boltdb/bolt"
@@ -111,8 +114,8 @@ type BlockChainIterator struct {
 }
 
 //创建区块链迭代器
-func (blockChain *blockChain) Iterator() *BlockChainIterator {
-	bci := BlockChainIterator{currHash: blockChain.Tip, db: blockChain.Db}
+func (bc *blockChain) Iterator() *BlockChainIterator {
+	bci := BlockChainIterator{currHash: bc.Tip, db: bc.Db}
 	return &bci
 }
 
@@ -136,13 +139,13 @@ func (bci *BlockChainIterator) Next() *Block {
 }
 
 //打印区块链
-func (blockChain *blockChain) PrintChain() {
+func (bc *blockChain) PrintChain() {
 	//全局的当前区块
 	var b *Block
 	//全局的当前区块的哈希值的int形式
 	var hashInt big.Int
 	//创建当前区块链的迭代器
-	iterator := blockChain.Iterator()
+	iterator := bc.Iterator()
 	for {
 		//迭代出区块链中的区块
 		b = iterator.Next()
@@ -171,6 +174,12 @@ func (bc *blockChain) AddBlock(txs []*transaction) {
 	if !exist {
 		log.Println("当前区块链不存在，请先创建区块链")
 		os.Exit(1)
+	}
+	//在添加新区块之前对txs进行签名验证
+	for _, tx := range txs {
+		if !bc.VerifyTransaction(tx) {
+			log.Panic("签名验证失败")
+		}
 	}
 	//向区块链中添加新的区块
 	err := bc.Db.Update(func(tx *bolt.Tx) error {
@@ -270,4 +279,60 @@ func (bc *blockChain) GetBalance(address string) float64 {
 		}
 	}
 	return total
+}
+
+//对一个transaction中的所有input进行数字签名
+func (bc *blockChain) SignTransaction(tx *transaction, privateKey ecdsa.PrivateKey) {
+	//交易的哈希值与交易的映射
+	preTXs := make(map[string]transaction)
+	//找到当前交易中的所有input所对应的交易
+	for _, input := range tx.TxInputs {
+		//通过input中的交易的哈希找到所对应的交易
+		preTX, err := bc.FindTransaction(input.TXHash)
+		if err != nil {
+			log.Panic(err)
+		}
+		//先将交易的哈希值由字节数组编码为字符串，然后将交易的哈希值（字符的形式）与交易进行映射
+		preTXs[hex.EncodeToString(preTX.TxHash)] = preTX
+	}
+	//进行数字签名
+	tx.Sign(privateKey, preTXs)
+}
+
+//根据交易的哈希值找出当前交易
+func (bc *blockChain) FindTransaction(txHash []byte) (transaction, error) {
+	var hashInt big.Int
+	iterator := bc.Iterator()
+	for {
+		b := iterator.Next()
+		for _, tx := range b.Txs {
+			if bytes.Compare(tx.TxHash, txHash) == 0 {
+				return *tx, nil
+			}
+		}
+		hashInt.SetBytes(b.PrevBlockHash)
+		//如果当前区块的前一个区块的哈希值为0，则认为当前区块已经是创世区块了，跳出循环
+		if hashInt.Cmp(big.NewInt(0)) == 0 {
+			break
+		}
+	}
+	return transaction{}, errors.New("交易不存在")
+}
+
+//验证交易的数字签名
+func (bc *blockChain) VerifyTransaction(tx *transaction) bool {
+	//交易的哈希值与交易的映射
+	preTXs := make(map[string]transaction)
+	//找到当前交易中的所有input所对应的交易
+	for _, input := range tx.TxInputs {
+		//通过input中的交易的哈希找到所对应的交易
+		preTX, err := bc.FindTransaction(input.TXHash)
+		if err != nil {
+			log.Panic(err)
+		}
+		//先将交易的哈希值由字节数组编码为字符串，然后将交易的哈希值（字符的形式）与交易进行映射
+		preTXs[hex.EncodeToString(preTX.TxHash)] = preTX
+	}
+	//数字签名验证
+	return tx.Verify(preTXs)
 }

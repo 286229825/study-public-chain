@@ -51,7 +51,7 @@ func NewWallet() *Wallet {
 
 //获取所有钱包地址
 func GetAllAddress() []string {
-	wallets, err := GetAllWallets()
+	wallets, err := getAllWallets()
 	if err != nil {
 		log.Panic(err)
 	}
@@ -63,7 +63,7 @@ func GetAllAddress() []string {
 }
 
 //从本地文件中获取所有已经创建的钱包
-func GetAllWallets() (map[string]*Wallet, error) {
+func getAllWallets() (map[string]*Wallet, error) {
 	//定义钱包数据集合，key为钱包地址的字符串，value为钱包
 	var wallets map[string]*Wallet
 	//校验钱包数据所在的文件是否存在
@@ -87,7 +87,7 @@ func GetAllWallets() (map[string]*Wallet, error) {
 
 //将当前钱包存储到本地文件
 func (wallet *Wallet) saveToFile() error {
-	wallets, err := GetAllWallets()
+	wallets, err := getAllWallets()
 	if err != nil {
 		return err
 	}

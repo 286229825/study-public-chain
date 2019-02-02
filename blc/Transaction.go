@@ -2,9 +2,14 @@ package blc
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/gob"
+	"encoding/hex"
 	"log"
+	"math/big"
 )
 
 //交易结构
@@ -39,6 +44,93 @@ func (tx *transaction) hashTransaction() []byte {
 	return hash[:]
 }
 
+//对交易进行数字签名
+func (tx *transaction) Sign(privateKey ecdsa.PrivateKey, preTXs map[string]transaction) {
+	//如果是coinbase交易，则不需要进行数字签名
+	if tx.isCoinbase() {
+		return
+	}
+	//校验当前交易中的inputs所引用的其他交易中的output是否存在，如果不存在，则抛出异常
+	for _, input := range tx.TxInputs {
+		if tx, isPresent := preTXs[hex.EncodeToString(input.TXHash)]; !isPresent || tx.TxHash == nil {
+			log.Panic("当前交易中的输入所引用的输出不存在")
+		}
+	}
+	//将当前交易进行拷贝
+	txCopy := tx.TrimmedCopy()
+	for index, input := range txCopy.TxInputs {
+		preTX := preTXs[hex.EncodeToString(input.TXHash)]
+		txCopy.TxInputs[index].Signature = nil
+		txCopy.TxInputs[index].PubKey = preTX.TxOutputs[input.Vout].Ripemd160Hash
+		txCopy.TxHash = txCopy.hashTransaction()
+		txCopy.TxInputs[index].PubKey = nil
+		//签名
+		r, s, err := ecdsa.Sign(rand.Reader, &privateKey, txCopy.TxHash)
+		if err != nil {
+			log.Panic(err)
+		}
+		signature := append(r.Bytes(), s.Bytes()...)
+		tx.TxInputs[index].Signature = signature
+	}
+}
+
+//拷贝一份新的transaction用于数字签名
+func (tx *transaction) TrimmedCopy() transaction {
+	var inputs []*TxInput
+	var outputs []*TxOutput
+	for _, input := range tx.TxInputs {
+		inputs = append(inputs, &TxInput{input.TXHash, input.Vout, input.Signature, input.PubKey})
+	}
+	for _, output := range tx.TxOutputs {
+		outputs = append(outputs, &TxOutput{output.Value, output.Ripemd160Hash})
+	}
+	return transaction{tx.TxHash, inputs, outputs}
+}
+
+//验证数字签名
+func (tx *transaction) Verify(preTXs map[string]transaction) bool {
+	//如果是coinbase交易，则不需要验证数字签名
+	if tx.isCoinbase() {
+		return true
+	}
+	for _, input := range tx.TxInputs {
+		if tx, isPresent := preTXs[hex.EncodeToString(input.TXHash)]; !isPresent || tx.TxHash == nil {
+			log.Panic("当前交易中的输入所引用的输出不存在")
+		}
+	}
+	//将当前交易进行拷贝
+	txCopy := tx.TrimmedCopy()
+	//生成曲线
+	curve := elliptic.P256()
+	for index, input := range txCopy.TxInputs {
+		preTX := preTXs[hex.EncodeToString(input.TXHash)]
+		txCopy.TxInputs[index].Signature = nil
+		txCopy.TxInputs[index].PubKey = preTX.TxOutputs[input.Vout].Ripemd160Hash
+		txCopy.TxHash = txCopy.hashTransaction()
+		txCopy.TxInputs[index].PubKey = nil
+
+		r := big.Int{}
+		s := big.Int{}
+		sigLen := len(input.Signature)
+		r.SetBytes(input.Signature[:(sigLen / 2)])
+		s.SetBytes(input.Signature[(sigLen / 2):])
+
+		x := big.Int{}
+		y := big.Int{}
+		keyLen := len(input.PubKey)
+		x.SetBytes(input.PubKey[:(keyLen / 2)])
+		y.SetBytes(input.PubKey[(keyLen / 2):])
+
+		rowPubKey := ecdsa.PublicKey{curve, &x, &y}
+
+		//用原生的公钥与签名的数据和r和s进行比对
+		if !ecdsa.Verify(&rowPubKey, txCopy.TxHash, &r, &s) {
+			return false
+		}
+	}
+	return true
+}
+
 //创建 Coinbase 交易。
 //Coinbase 交易是矿工创建的，主要是为了奖励矿工为了进行 POW 挖矿而付出的努力。
 //奖励分为两部分，
@@ -63,7 +155,7 @@ func NewCoinbaseTransaction(address string) *transaction {
 //from：出钱的人，只能有一个
 //tos：收钱的人，可以有多个
 func NewTransaction(from string, tos map[string]float64, bc *blockChain) *transaction {
-	wallets, err := GetAllWallets()
+	wallets, err := getAllWallets()
 	if err != nil {
 		log.Panic(err)
 	}
@@ -103,6 +195,8 @@ func NewTransaction(from string, tos map[string]float64, bc *blockChain) *transa
 	}
 	tx := &transaction{[]byte{}, inputs, outputs}
 	tx.TxHash = tx.hashTransaction()
+	//进行数字签名。签名的作用在于当A转账给B的时候，A只能花费属于他自己的钱来转给B
+	bc.SignTransaction(tx, wallet.PrivateKey)
 	return tx
 }
 
@@ -120,7 +214,6 @@ type TxInput struct {
 
 func (input *TxInput) UnlockRipemd160Hash(Ripemd160Hash []byte) bool {
 	hashPubKey := HashPubKey(input.PubKey)
-
 	return bytes.Compare(hashPubKey, Ripemd160Hash) == 0
 }
 
@@ -128,7 +221,7 @@ func (input *TxInput) UnlockRipemd160Hash(Ripemd160Hash []byte) bool {
 type TxOutput struct {
 	//支付给收款方的金额
 	Value float64
-	//经过一次256哈希，再经过一次160哈希之后的公钥
+	//经过一次256哈希，再经过一次160哈希之后的收款方的公钥，用于锁定当前输出中的钱只属于收款方的
 	Ripemd160Hash []byte
 }
 

@@ -104,7 +104,10 @@ func (cli *CLI) createWallet() {
 }
 
 func (cli *CLI) getAddressList() {
-
+	allAddress := GetAllAddress()
+	for i, address := range allAddress {
+		log.Printf("第%d个地址为：%s\n", i+1, address)
+	}
 }
 
 func (cli *CLI) paramsCheck() {
