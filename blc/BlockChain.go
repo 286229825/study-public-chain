@@ -168,7 +168,7 @@ func (bc *blockChain) PrintChain() {
 }
 
 //向区块链中添加新的区块
-func (bc *blockChain) AddBlock(txs []*transaction) {
+func (bc *blockChain) AddBlock(address string, txs []*transaction) {
 	//判断当前区块链的数据库是否存在
 	exist := dbExist()
 	if !exist {
@@ -181,6 +181,9 @@ func (bc *blockChain) AddBlock(txs []*transaction) {
 			log.Panic("签名验证失败")
 		}
 	}
+	//挖矿奖励
+	tx := NewCoinbaseTransaction(address)
+	txs = append(txs, tx)
 	//向区块链中添加新的区块
 	err := bc.Db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(tableName))
