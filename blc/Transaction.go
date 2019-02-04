@@ -45,32 +45,24 @@ func (tx *transaction) hashTransaction() []byte {
 }
 
 //对交易进行数字签名
-func (tx *transaction) Sign(privateKey ecdsa.PrivateKey, preTXs map[string]transaction) {
-	//如果是coinbase交易，则不需要进行数字签名
+func (tx *transaction) Sign(privKey ecdsa.PrivateKey, prevTXs map[string]transaction) {
 	if tx.isCoinbase() {
 		return
 	}
-	//校验当前交易中的inputs所引用的其他交易中的output是否存在，如果不存在，则抛出异常
-	for _, input := range tx.TxInputs {
-		if tx, isPresent := preTXs[hex.EncodeToString(input.TXHash)]; !isPresent || tx.TxHash == nil {
-			log.Panic("当前交易中的输入所引用的输出不存在")
-		}
-	}
-	//将当前交易进行拷贝
+
 	txCopy := tx.TrimmedCopy()
-	for index, input := range txCopy.TxInputs {
-		preTX := preTXs[hex.EncodeToString(input.TXHash)]
-		txCopy.TxInputs[index].Signature = nil
-		txCopy.TxInputs[index].PubKey = preTX.TxOutputs[input.Vout].Ripemd160Hash
-		txCopy.TxHash = txCopy.hashTransaction()
-		txCopy.TxInputs[index].PubKey = nil
-		//签名
-		r, s, err := ecdsa.Sign(rand.Reader, &privateKey, txCopy.TxHash)
-		if err != nil {
-			log.Panic(err)
-		}
+
+	for inID, vin := range txCopy.TxInputs {
+		prevTx := prevTXs[hex.EncodeToString(vin.TXHash)]
+		txCopy.TxInputs[inID].Signature = nil
+		txCopy.TxInputs[inID].PubKey = prevTx.TxOutputs[vin.Vout].Ripemd160Hash
+		txCopy.TxHash = txCopy.Hash()
+		txCopy.TxInputs[inID].PubKey = nil
+
+		r, s, _ := ecdsa.Sign(rand.Reader, &privKey, txCopy.TxHash)
 		signature := append(r.Bytes(), s.Bytes()...)
-		tx.TxInputs[index].Signature = signature
+
+		tx.TxInputs[inID].Signature = signature
 	}
 }
 
@@ -78,36 +70,47 @@ func (tx *transaction) Sign(privateKey ecdsa.PrivateKey, preTXs map[string]trans
 func (tx *transaction) TrimmedCopy() transaction {
 	var inputs []*TxInput
 	var outputs []*TxOutput
+
 	for _, input := range tx.TxInputs {
-		inputs = append(inputs, &TxInput{input.TXHash, input.Vout, input.Signature, input.PubKey})
+		inputs = append(inputs, &TxInput{input.TXHash, input.Vout, nil, nil})
 	}
+
 	for _, output := range tx.TxOutputs {
 		outputs = append(outputs, &TxOutput{output.Value, output.Ripemd160Hash})
 	}
-	return transaction{tx.TxHash, inputs, outputs}
+
+	txCopy := transaction{tx.TxHash, inputs, outputs}
+
+	return txCopy
+}
+
+func (tx *transaction) Hash() []byte {
+	txCopy := tx
+	txCopy.TxHash = []byte{}
+	hash := sha256.Sum256(txCopy.Serialize())
+	return hash[:]
+}
+
+func (tx *transaction) Serialize() []byte {
+	var encoded bytes.Buffer
+	enc := gob.NewEncoder(&encoded)
+	err := enc.Encode(tx)
+	if err != nil {
+		log.Panic(err)
+	}
+	return encoded.Bytes()
 }
 
 //验证数字签名
-func (tx *transaction) Verify(preTXs map[string]transaction) bool {
-	//如果是coinbase交易，则不需要验证数字签名
-	if tx.isCoinbase() {
-		return true
-	}
-	for _, input := range tx.TxInputs {
-		if tx, isPresent := preTXs[hex.EncodeToString(input.TXHash)]; !isPresent || tx.TxHash == nil {
-			log.Panic("当前交易中的输入所引用的输出不存在")
-		}
-	}
-	//将当前交易进行拷贝
+func (tx *transaction) Verify(prevTXs map[string]transaction) bool {
 	txCopy := tx.TrimmedCopy()
-	//生成曲线
 	curve := elliptic.P256()
-	for index, input := range txCopy.TxInputs {
-		preTX := preTXs[hex.EncodeToString(input.TXHash)]
-		txCopy.TxInputs[index].Signature = nil
-		txCopy.TxInputs[index].PubKey = preTX.TxOutputs[input.Vout].Ripemd160Hash
-		txCopy.TxHash = txCopy.hashTransaction()
-		txCopy.TxInputs[index].PubKey = nil
+	for i, input := range tx.TxInputs {
+		prevTx := prevTXs[hex.EncodeToString(input.TXHash)]
+		txCopy.TxInputs[i].Signature = nil
+		txCopy.TxInputs[i].PubKey = prevTx.TxOutputs[input.Vout].Ripemd160Hash
+		txCopy.TxHash = txCopy.Hash()
+		txCopy.TxInputs[i].PubKey = nil
 
 		r := big.Int{}
 		s := big.Int{}
@@ -121,10 +124,8 @@ func (tx *transaction) Verify(preTXs map[string]transaction) bool {
 		x.SetBytes(input.PubKey[:(keyLen / 2)])
 		y.SetBytes(input.PubKey[(keyLen / 2):])
 
-		rowPubKey := ecdsa.PublicKey{curve, &x, &y}
-
-		//用原生的公钥与签名的数据和r和s进行比对
-		if !ecdsa.Verify(&rowPubKey, txCopy.TxHash, &r, &s) {
+		rawPubKey := ecdsa.PublicKey{curve, &x, &y}
+		if ecdsa.Verify(&rawPubKey, txCopy.TxHash, &r, &s) == false {
 			return false
 		}
 	}
@@ -171,16 +172,18 @@ func NewTransaction(from string, tos map[string]float64, bc *blockChain) *transa
 	var inputs []*TxInput
 	var outputs []*TxOutput
 	//创建输入
-	for txHash, indexs := range suitableUTXOs {
-		for _, index := range indexs {
-			input := &TxInput{
-				TXHash:    []byte(txHash),
-				Vout:      index,
-				Signature: nil,
-				PubKey:    wallet.PublicKey,
-			}
-			inputs = append(inputs, input)
+	for txHashStr, index := range suitableUTXOs {
+		txHash, err := hex.DecodeString(txHashStr)
+		if err != nil {
+			log.Panic(err)
 		}
+		input := &TxInput{
+			TXHash:    []byte(txHash),
+			Vout:      index,
+			Signature: nil,
+			PubKey:    wallet.PublicKey,
+		}
+		inputs = append(inputs, input)
 	}
 	//创建输出
 	//给对方支付

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/boltdb/bolt"
@@ -79,8 +80,13 @@ func CreateBlockChain(address string) *blockChain {
 	if err != nil {
 		log.Panic(err)
 	}
-	//返回区块链类型，其中的最新的区块的哈希值为创世块的哈希值
-	return &blockChain{hash, db}
+	//创建区块链类型，其中的最新的区块的哈希值为创世块的哈希值
+	bc := &blockChain{hash, db}
+	//重置UTXO池
+	utxoSet := UTXOSet{bc}
+	utxoSet.ResetUTXOSet()
+	//返回区块链类型
+	return bc
 }
 
 //从数据库中获取区块链
@@ -211,81 +217,106 @@ func (bc *blockChain) AddBlock(address string, txs []*transaction) {
 	if err != nil {
 		log.Panic(err)
 	}
+	//更新UTXO池
+	utxoSet := UTXOSet{bc}
+	utxoSet.UpdateUTXOSet(txs)
 }
 
 //找出当前用户所有可用的UTXO所在的交易数组
-func (bc *blockChain) findUTXOTransactions(address string) []*transaction {
-	publicKeyHash := Base58Decode([]byte(address))
-	ripemd160Hash := publicKeyHash[1 : len(publicKeyHash)-4]
-	iterator := bc.Iterator()
-	spentedOutputs := make(map[string]int64)
-	var unSpentedTx []*transaction
-	var hashInt big.Int
-	for {
-		b := iterator.Next()
-		for _, tx := range b.Txs {
-			if tx != nil && !tx.isCoinbase() {
-				for _, input := range tx.TxInputs {
-					if input.UnlockRipemd160Hash(ripemd160Hash) {
-						spentedOutputs[string(input.TXHash)] = input.Vout
-					}
-				}
-			}
-			for _, output := range tx.TxOutputs {
-				if output.UnLockScriptPubKeyWithAddress(address) {
-					if _, isPresent := spentedOutputs[string(tx.TxHash)]; !isPresent {
-						unSpentedTx = append(unSpentedTx, tx)
-						break
-					}
-				}
-			}
-		}
-		hashInt.SetBytes(b.PrevBlockHash)
-		//如果当前区块的前一个区块的哈希值为0，则认为当前区块已经是创世区块了，跳出循环
-		if hashInt.Cmp(big.NewInt(0)) == 0 {
-			break
-		}
-	}
-	return unSpentedTx
-}
+//func (bc *blockChain) findUTXOTransactions(address string) []*transaction {
+//	publicKeyHash := Base58Decode([]byte(address))
+//	ripemd160Hash := publicKeyHash[1 : len(publicKeyHash)-4]
+//	iterator := bc.Iterator()
+//	spentedOutputs := make(map[string]int64)
+//	var unSpentedTx []*transaction
+//	var hashInt big.Int
+//	for {
+//		b := iterator.Next()
+//		for _, tx := range b.Txs {
+//			if tx != nil && !tx.isCoinbase() {
+//				for _, input := range tx.TxInputs {
+//					if input.UnlockRipemd160Hash(ripemd160Hash) {
+//						spentedOutputs[string(input.TXHash)] = input.Vout
+//					}
+//				}
+//			}
+//			for _, output := range tx.TxOutputs {
+//				if output.UnLockScriptPubKeyWithAddress(address) {
+//					if _, isPresent := spentedOutputs[string(tx.TxHash)]; !isPresent {
+//						unSpentedTx = append(unSpentedTx, tx)
+//						break
+//					}
+//				}
+//			}
+//		}
+//		hashInt.SetBytes(b.PrevBlockHash)
+//		//如果当前区块的前一个区块的哈希值为0，则认为当前区块已经是创世区块了，跳出循环
+//		if hashInt.Cmp(big.NewInt(0)) == 0 {
+//			break
+//		}
+//	}
+//	return unSpentedTx
+//}
 
 //找出适用于当前交易的UTXO
-func (bc *blockChain) findSuitableUTXOs(from string, amount float64) (map[string][]int64, float64) {
-	transactions := bc.findUTXOTransactions(from)
-	suitableUTXOs := make(map[string][]int64)
+func (bc *blockChain) findSuitableUTXOs(from string, amount float64) (map[string]int64, float64) {
+	//	transactions := bc.findUTXOTransactions(from)
+	//	suitableUTXOs := make(map[string][]int64)
+	//	var total float64 = 0
+	//LABEL1:
+	//	for _, tx := range transactions {
+	//		for index, output := range tx.TxOutputs {
+	//			if output.UnLockScriptPubKeyWithAddress(from) {
+	//				//判断当前搜集的UTXO的总金额是否大于所需要花费的金额
+	//				if total < amount {
+	//					suitableUTXOs[string(tx.TxHash)] = append(suitableUTXOs[string(tx.TxHash)], int64(index))
+	//					total += output.Value
+	//				} else {
+	//					break LABEL1
+	//				}
+	//			}
+	//		}
+	//	}
+	//	return suitableUTXOs, total
+	suitableUTXOs := make(map[string]int64)
 	var total float64 = 0
-LABEL1:
-	for _, tx := range transactions {
-		for index, output := range tx.TxOutputs {
-			if output.UnLockScriptPubKeyWithAddress(from) {
-				//判断当前搜集的UTXO的总金额是否大于所需要花费的金额
-				if total < amount {
-					suitableUTXOs[string(tx.TxHash)] = append(suitableUTXOs[string(tx.TxHash)], int64(index))
-					total += output.Value
-				} else {
-					break LABEL1
-				}
-			}
+	utxoMap := bc.FindUTXOAndTxHashForAddress(from)
+	for txHashStr, utxo := range utxoMap {
+		if total < amount {
+			suitableUTXOs[txHashStr] = utxo.Vout
+			total += utxo.Output.Value
+		} else {
+			break
 		}
 	}
 	return suitableUTXOs, total
 }
 
 func (bc *blockChain) GetBalance(address string) float64 {
-	txs := bc.findUTXOTransactions(address)
+	//txs := bc.findUTXOTransactions(address)
+	//var total float64 = 0
+	//for _, tx := range txs {
+	//	for _, output := range tx.TxOutputs {
+	//		if output.UnLockScriptPubKeyWithAddress(address) {
+	//			total += output.Value
+	//		}
+	//	}
+	//}
+	//return total
+	utxos := bc.FindUTXOForAddress(address)
 	var total float64 = 0
-	for _, tx := range txs {
-		for _, output := range tx.TxOutputs {
-			if output.UnLockScriptPubKeyWithAddress(address) {
-				total += output.Value
-			}
-		}
+	for _, utxo := range utxos {
+		total += utxo.Output.Value
 	}
 	return total
 }
 
 //对一个transaction中的所有input进行数字签名
 func (bc *blockChain) SignTransaction(tx *transaction, privateKey ecdsa.PrivateKey) {
+	//如果是coinbase交易，则不需要进行数字签名
+	if tx.isCoinbase() {
+		return
+	}
 	//交易的哈希值与交易的映射
 	preTXs := make(map[string]transaction)
 	//找到当前交易中的所有input所对应的交易
@@ -338,4 +369,96 @@ func (bc *blockChain) VerifyTransaction(tx *transaction) bool {
 	}
 	//数字签名验证
 	return tx.Verify(preTXs)
+}
+
+//找出所有未花费的输出
+func (bc *blockChain) FindUTXOs() map[string][]UTXO {
+	iterator := bc.Iterator()
+	spentedOutputs := make(map[string][]int64)
+	unSpentedOutputs := make(map[string][]UTXO)
+	var hashInt big.Int
+	for {
+		b := iterator.Next()
+		for _, tx := range b.Txs {
+			if tx != nil && !tx.isCoinbase() {
+				for _, input := range tx.TxInputs {
+					txHashStr := hex.EncodeToString(input.TXHash)
+					vouts := spentedOutputs[txHashStr]
+					vouts = append(vouts, input.Vout)
+					spentedOutputs[txHashStr] = vouts
+				}
+			}
+			for index, output := range tx.TxOutputs {
+				txHashStr := hex.EncodeToString(tx.TxHash)
+				if _, isPresent := spentedOutputs[txHashStr]; !isPresent {
+					utxo := UTXO{output, int64(index)}
+					utxos := unSpentedOutputs[txHashStr]
+					utxos = append(utxos, utxo)
+					unSpentedOutputs[txHashStr] = utxos
+				}
+			}
+		}
+		hashInt.SetBytes(b.PrevBlockHash)
+		//如果当前区块的前一个区块的哈希值为0，则认为当前区块已经是创世区块了，跳出循环
+		if hashInt.Cmp(big.NewInt(0)) == 0 {
+			break
+		}
+	}
+	return unSpentedOutputs
+}
+
+//查找某个地址所对应的所有UTXO
+func (bc *blockChain) FindUTXOForAddress(address string) []UTXO {
+	var result []UTXO
+	err := bc.Db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(utxoTableName))
+		if bucket != nil {
+			//游标
+			c := bucket.Cursor()
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				var utxos []UTXO
+				json.Unmarshal(v, &utxos)
+				for _, utxo := range utxos {
+					if utxo.Output.UnLockScriptPubKeyWithAddress(address) {
+						result = append(result, utxo)
+					}
+				}
+			}
+			return nil
+		}
+		return errors.New("UTXOSet数据不存在")
+	})
+	if err != nil {
+		log.Panic(err)
+	}
+	return result
+}
+
+//查找某个地址所对应的所有UTXO及其对应的交易哈希
+func (bc *blockChain) FindUTXOAndTxHashForAddress(address string) map[string]UTXO {
+	result := make(map[string]UTXO)
+	err := bc.Db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(utxoTableName))
+		if bucket != nil {
+			//游标
+			c := bucket.Cursor()
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				var utxos []UTXO
+				json.Unmarshal(v, &utxos)
+				txHashStr := hex.EncodeToString(k)
+				for _, utxo := range utxos {
+					if utxo.Output.UnLockScriptPubKeyWithAddress(address) {
+						result[txHashStr] = utxo
+						break
+					}
+				}
+			}
+			return nil
+		}
+		return errors.New("UTXOSet数据不存在")
+	})
+	if err != nil {
+		log.Panic(err)
+	}
+	return result
 }

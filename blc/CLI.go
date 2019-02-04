@@ -47,7 +47,7 @@ func (cli *CLI) createChain(address string) {
 	log.Println("区块链创建成功")
 }
 
-func (cli *CLI) send(sendCmdFromParam, sendCmdToParam string) {
+func (cli *CLI) Send(sendCmdFromParam, sendCmdToParam string) {
 	if !ValidateAddress(sendCmdFromParam) {
 		log.Panic("汇款人地址" + sendCmdFromParam + "无效")
 	}
@@ -77,7 +77,7 @@ func (cli *CLI) send(sendCmdFromParam, sendCmdToParam string) {
 	}
 	tx := NewTransaction(sendCmdFromParam, tos, bc)
 	//每一次交易都会打包一个区块，这是不对的，应该是将一定的时间内的所有交易一起打包成一个区块，以后会进行完善
-	bc.AddBlock([]*transaction{tx})
+	bc.AddBlock(sendCmdFromParam, []*transaction{tx})
 	log.Println("交易创建成功")
 }
 
@@ -159,7 +159,7 @@ func (cli *CLI) Run() {
 				cli.printUsage()
 				return
 			}
-			cli.send(*sendCmdFromParam, *sendCmdToParam)
+			cli.Send(*sendCmdFromParam, *sendCmdToParam)
 		}
 	case printChain:
 		err := printChainCmd.Parse(os.Args[2:])
