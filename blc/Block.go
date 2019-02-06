@@ -2,7 +2,6 @@ package blc
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/gob"
 	"log"
 	"time"
@@ -26,15 +25,21 @@ type Block struct {
 
 //将交易数据转换为字节数组
 func (b *Block) hashTransactions() []byte {
-	var txHashes [][]byte
-	//将每一个交易的hash拼成二维数组
+	//var txHashes [][]byte
+	////将每一个交易的hash拼成二维数组
+	//for _, tx := range b.Txs {
+	//	txHashes = append(txHashes, tx.TxHash)
+	//}
+	////对二维切片进行拼接，生成一维切片
+	//data := bytes.Join(txHashes, []byte{})
+	//hash := sha256.Sum256(data)
+	//return hash[:]
+	var transactions [][]byte
 	for _, tx := range b.Txs {
-		txHashes = append(txHashes, tx.TxHash)
+		transactions = append(transactions, tx.Serialize())
 	}
-	//对二维切片进行拼接，生成一维切片
-	data := bytes.Join(txHashes, []byte{})
-	hash := sha256.Sum256(data)
-	return hash[:]
+	merkleTree := NewMerkleTree(transactions)
+	return merkleTree.RootNode.Data
 }
 
 //将区块序列化成字节数组
