@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"log"
 	"math/big"
+	"os"
 )
 
 //交易结构
@@ -156,7 +157,11 @@ func NewCoinbaseTransaction(address string) *transaction {
 //from：出钱的人，只能有一个
 //tos：收钱的人，可以有多个
 func NewTransaction(from string, tos map[string]float64, bc *blockChain) *transaction {
-	wallets, err := getAllWallets()
+	nodeId := os.Getenv("NODE_ID")
+	if nodeId == "" {
+		log.Fatal("无法获取NODE_ID的环境变量")
+	}
+	wallets, err := getAllWallets(nodeId)
 	if err != nil {
 		log.Panic(err)
 	}

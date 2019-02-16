@@ -15,7 +15,7 @@ import (
 )
 
 //数据库名
-const dbName = "blockchain.db"
+const dbName = "blockchain_%s.db"
 
 //数据库中的表名
 const tableName = "blocks"
@@ -32,7 +32,7 @@ type blockChain struct {
 }
 
 //判断当前区块链的数据库是否存在
-func dbExist() bool {
+func dbExist(dbName string) bool {
 	if _, err := os.Stat(dbName); os.IsNotExist(err) {
 		return false
 	}
@@ -40,9 +40,10 @@ func dbExist() bool {
 }
 
 //创建区块链
-func CreateBlockChain(address string) *blockChain {
+func CreateBlockChain(address, nodeId string) *blockChain {
+	dbName := fmt.Sprintf(dbName, nodeId)
 	//判断当前区块链的数据库是否存在
-	if dbExist() {
+	if dbExist(dbName) {
 		log.Fatal("当前区块链已存在，不能重复创建")
 	}
 	//打开或创建数据库
@@ -90,8 +91,9 @@ func CreateBlockChain(address string) *blockChain {
 }
 
 //从数据库中获取区块链
-func GetBlockChain() *blockChain {
-	if !dbExist() {
+func GetBlockChain(nodeId string) *blockChain {
+	dbName := fmt.Sprintf(dbName, nodeId)
+	if !dbExist(dbName) {
 		log.Fatal("当前区块链不存在，请先创建！")
 	}
 	db, err := bolt.Open(dbName, 0600, nil)
@@ -174,9 +176,10 @@ func (bc *blockChain) PrintChain() {
 }
 
 //向区块链中添加新的区块
-func (bc *blockChain) AddBlock(address string, txs []*transaction) {
+func (bc *blockChain) AddBlock(address, nodeId string, txs []*transaction) {
+	dbName := fmt.Sprintf(dbName, nodeId)
 	//判断当前区块链的数据库是否存在
-	exist := dbExist()
+	exist := dbExist(dbName)
 	if !exist {
 		log.Println("当前区块链不存在，请先创建区块链")
 		os.Exit(1)
@@ -461,4 +464,70 @@ func (bc *blockChain) FindUTXOAndTxHashForAddress(address string) map[string]UTX
 		log.Panic(err)
 	}
 	return result
+}
+
+//获取当前节点中最长的区块链高度
+func (bc *blockChain) GetBestHeight() int64 {
+	block := bc.Iterator().Next()
+	return block.Height
+}
+
+//直接向区块链中添加区块
+func (bc *blockChain) AddBlockToBlockchain(b *Block) {
+	err := bc.Db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(tableName))
+		if b != nil {
+			block := bucket.Get(b.Hash)
+			// 如果当前区块已存在，不需要做任何过多的处理
+			if block != nil {
+				return nil
+			}
+			err := bucket.Put(b.Hash, b.Serialize())
+			if err != nil {
+				return err
+			}
+			//取出最新的区块
+			blockHash := bucket.Get([]byte(lastHashKey))
+			blockBytes := bucket.Get(blockHash)
+			blockInDB := Deserialize(blockBytes)
+			//如果最新的区块的高度小于当前区块的高度，则更新区块链中的最新的区块
+			if blockInDB.Height < b.Height {
+				bucket.Put([]byte(lastHashKey), b.Hash)
+				bc.Tip = b.Hash
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		log.Panic(err)
+	}
+}
+
+//获取区块链中所有区块的哈希值
+func (bc *blockChain) GetBlockHashes() [][]byte {
+	blockIterator := bc.Iterator()
+	var blockHashs [][]byte
+	for {
+		block := blockIterator.Next()
+		blockHashs = append(blockHashs, block.Hash)
+		var hashInt big.Int
+		hashInt.SetBytes(block.PrevBlockHash)
+		if hashInt.Cmp(big.NewInt(0)) == 0 {
+			break
+		}
+	}
+	return blockHashs
+}
+
+//根据区块哈希获取区块的字节数组
+func (bc *blockChain) GetBlock(blockHash []byte) ([]byte, error) {
+	var blockBytes []byte
+	err := bc.Db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(tableName))
+		if b != nil {
+			blockBytes = b.Get(blockHash)
+		}
+		return nil
+	})
+	return blockBytes, err
 }
